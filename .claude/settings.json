@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:NODE_ENV=\"development\"; & \".\\\\node_modules\\\\.bin\\\\electron.cmd\" . 2>&1 | Select-Object -First 15)"
+    ]
+  }
+}
