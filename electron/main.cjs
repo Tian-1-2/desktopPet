@@ -7,6 +7,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const https = require("node:https");
 
 // 开发模式下加载 Vite 本地服务，生产模式加载打包后的 dist/index.html
 const isDev = process.env.NODE_ENV === "development";
@@ -17,6 +18,8 @@ const PET_H = 220;
 
 let win = null; // 宠物窗口实例
 let tray = null; // 系统托盘实例
+let viewMode = "pet"; // 视图模式：'pet' 显示宠物 / 'gold' 只显示金价
+let goldCache = { data: null, ts: 0 }; // 金价缓存，避免频繁请求接口
 
 // 创建并配置宠物窗口（透明置顶无边框），定位到屏幕右下角并加载页面
 function createWindow() {
@@ -81,6 +84,10 @@ function buildTrayMenu() {
       label: win && win.isVisible() ? "隐藏宠物" : "显示宠物",
       click: () => toggleVisible(),
     },
+    {
+      label: viewMode === "pet" ? "切换到金价" : "切换到宠物",
+      click: () => setMode(viewMode === "pet" ? "gold" : "pet"),
+    },
     { type: "separator" },
     { label: "退出", click: () => app.quit() },
   ]);
@@ -107,6 +114,74 @@ function createTray() {
   tray.on("click", () => toggleVisible());
 }
 
+// ---- 实时金价：主进程抓取（避开渲染进程的 CORS / Referer 限制）----
+
+// 发起一次 HTTPS GET，返回响应的原始 Buffer（用于自行处理编码）
+function httpGet(url, headers) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, { headers }, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve(Buffer.concat(chunks)));
+      })
+      .on("error", reject);
+  });
+}
+
+// 解析新浪行情字符串中某个品种的字段，提取现价/涨跌/最高最低/时间
+// 字段约定：0=现价 4=最高 5=最低 6=时间 7=昨收 12=日期（数字均为 ASCII，可用 latin1 解码）
+function parseSina(text, key) {
+  const m = text.match(new RegExp('hq_str_' + key + '="([^"]*)"'));
+  if (!m) return null;
+  const f = m[1].split(",");
+  const price = parseFloat(f[0]);
+  if (!isFinite(price) || price <= 0) return null;
+  const prevClose = parseFloat(f[7]);
+  const hasPrev = isFinite(prevClose) && prevClose > 0;
+  const change = hasPrev ? price - prevClose : 0;
+  const changePct = hasPrev ? (change / prevClose) * 100 : 0;
+  return {
+    price: +price.toFixed(2),
+    change: +change.toFixed(2),
+    changePct: +changePct.toFixed(2),
+    high: parseFloat(f[4]) || null,
+    low: parseFloat(f[5]) || null,
+    time: f[6] || "",
+    date: f[12] || "",
+  };
+}
+
+// 抓取实时金价（上海金 gds_AUTD ¥/克 + 纽约COMEX金 hf_GC $/盎司），10 秒内复用缓存
+async function fetchGold() {
+  const now = Date.now();
+  if (goldCache.data && now - goldCache.ts < 10000) return goldCache.data;
+  try {
+    const buf = await httpGet("https://hq.sinajs.cn/list=gds_AUTD,hf_GC", {
+      Referer: "https://finance.sina.com.cn",
+    });
+    const text = buf.toString("latin1");
+    const data = {
+      ok: true,
+      shanghai: parseSina(text, "gds_AUTD"),
+      comex: parseSina(text, "hf_GC"),
+      updatedAt: now,
+    };
+    goldCache = { data, ts: now };
+    return data;
+  } catch (e) {
+    return { ok: false, shanghai: null, comex: null, error: String((e && e.message) || e) };
+  }
+}
+
+// 设置视图模式并把变化推送给渲染进程，同时刷新托盘菜单文案
+function setMode(mode) {
+  if (mode !== "pet" && mode !== "gold") return;
+  viewMode = mode;
+  if (win) win.webContents.send("pet:mode", viewMode);
+  refreshTrayMenu();
+}
+
 // ---- IPC：拖拽时渲染进程算位置，主进程执行移动 ----
 // 把窗口移到指定的绝对屏幕坐标（左上角）
 ipcMain.on("pet:move", (_e, x, y) => {
@@ -121,6 +196,15 @@ ipcMain.on("pet:action", (_e, name) => {
   if (name === "hide") toggleVisible();
   else if (name === "quit") app.quit();
 });
+
+// 返回实时金价数据
+ipcMain.handle("pet:getGold", () => fetchGold());
+
+// 返回当前视图模式（渲染进程初始化时同步用）
+ipcMain.handle("pet:getMode", () => viewMode);
+
+// 渲染进程（如双击）请求切换视图模式：宠物 <-> 金价
+ipcMain.on("pet:toggleMode", () => setMode(viewMode === "pet" ? "gold" : "pet"));
 
 // 应用就绪：去掉默认菜单，创建窗口与托盘；macOS 上点击 Dock 图标时按需重建窗口
 app.whenReady().then(() => {
