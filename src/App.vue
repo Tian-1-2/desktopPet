@@ -33,26 +33,46 @@ const toggleMode = () => window.petAPI.toggleMode();
 
 // 向主进程拉取一次金价并更新到本地
 async function refreshGold() {
+  if (loading.value) return;
   loading.value = true;
   try {
     gold.value = await window.petAPI.getGold();
+  } catch (error) {
+    gold.value = {
+      ok: Boolean(gold.value?.cny || gold.value?.usd),
+      cny: gold.value?.cny ? { ...gold.value.cny, stale: true } : null,
+      usd: gold.value?.usd ? { ...gold.value.usd, stale: true } : null,
+      error: String(error?.message || error),
+    };
   } finally {
     loading.value = false;
   }
 }
 
-// 金价模式下的定时轮询（每 20 秒刷新一次）
+// 金价模式下每 30 秒刷新一次，与 Gold-API 的数据更新频率一致。
 let timer = null;
+let pollingSession = 0;
+// 停止计时，并使尚未完成的旧轮询失效。
 function stopPolling() {
+  pollingSession++;
   if (timer) {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
   }
 }
+// 每次请求完成后等待 30 秒，避免计时器命中仍有效的主进程缓存。
 function startPolling() {
-  refreshGold();
   stopPolling();
-  timer = setInterval(refreshGold, 20000);
+  const session = pollingSession;
+  // 仅当前轮询会话可继续安排下一次请求。
+  async function poll() {
+    try {
+      await refreshGold();
+    } finally {
+      if (session === pollingSession) timer = setTimeout(poll, 30000);
+    }
+  }
+  poll();
 }
 
 // 仅在进入金价模式时轮询，切回宠物时停止

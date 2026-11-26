@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld("petAPI", {
   // 触发主进程动作：hide / quit
   action: (name) => ipcRenderer.send("pet:action", name),
 
-  // 获取实时金价（主进程抓取并缓存）：{ shanghai, comex, ok }
+  // 获取国际现货金（主进程抓取并缓存）：{ cny, usd, ok }
   getGold: () => ipcRenderer.invoke("pet:getGold"),
   // 获取当前视图模式：'pet'（显示宠物）| 'gold'（只显示金价）
   getMode: () => ipcRenderer.invoke("pet:getMode"),

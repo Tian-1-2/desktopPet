@@ -12,6 +12,19 @@ npm run build      # 构建渲染层到 dist/
 npm start          # 生产模式运行（加载 dist/index.html）
 ```
 
+## 金价数据
+
+金价模式使用 Gold-API.com 的国际现货黄金 XAU 报价，无须 API Key：
+
+- `https://api.gold-api.com/price/XAU/USD`：美元/金衡盎司。
+- `https://api.gold-api.com/price/XAU/CNY`：人民币/金衡盎司，除以 31.1035 换算为面板的元/克。
+- 每 30 秒刷新，手动点击同样复用 30 秒缓存；切回宠物模式后停止轮询。
+- “源更新”使用接口 `updatedAt`（上游抓取时间），转换为北京时间；悬停各报价查看独立时间。
+- 人民币金属于国际现货金的人民币报价，不是上海黄金交易所 T+D 行情。
+- 免费实时报价不提供昨收和日涨跌幅，因此面板不显示涨跌幅。
+
+接口说明：https://gold-api.com/faqs
+
 ## 项目结构
 
 ```

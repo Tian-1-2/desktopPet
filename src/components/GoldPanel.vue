@@ -3,38 +3,39 @@
  * GoldPanel.vue
  * 金价面板组件：在「只显示金价」模式下展示实时金价。
  * 数据由父组件 App.vue 通过 data 传入（来自主进程 petAPI.getGold），
- * 包含上海黄金(¥/克, gds_AUTD)与纽约 COMEX 黄金($/盎司, hf_GC)。
- * 涨绿跌红；点击面板手动刷新，双击（由父组件处理）切回宠物。
+ * Gold-API 国际现货金分别以人民币/克、美元/盎司显示。
+ * 点击面板刷新（30 秒内复用缓存），双击（由父组件处理）切回宠物。
  */
 import { computed } from "vue";
 
 const props = defineProps({
-  data: { type: Object, default: null }, // { ok, shanghai, comex, updatedAt }
+  data: { type: Object, default: null }, // { ok, cny, usd }
   loading: { type: Boolean, default: false }, // 是否正在请求
 });
 const emit = defineEmits(["refresh"]);
 
-const sh = computed(() => props.data?.shanghai || null); // 上海金
-const cx = computed(() => props.data?.comex || null); // 国际金
+const cny = computed(() => props.data?.cny || null); // 人民币现货金
+const usd = computed(() => props.data?.usd || null); // 美元现货金
 const failed = computed(() => props.data && props.data.ok === false); // 抓取失败
-
-// 根据涨跌方向返回 'up' | 'down' | 'flat'，用于着色
-const trend = (item) => {
-  if (!item || !isFinite(item.change)) return "flat";
-  if (item.change > 0) return "up";
-  if (item.change < 0) return "down";
-  return "flat";
-};
-
-// 带正负号的涨跌百分比文本，如 "+0.42%" / "-1.30%"
-const pct = (item) => {
-  if (!item || !isFinite(item.changePct)) return "";
-  const sign = item.changePct > 0 ? "+" : "";
-  return `${sign}${item.changePct.toFixed(2)}%`;
-};
+const stale = computed(() => cny.value?.stale || usd.value?.stale); // 正在显示上次成功报价
 
 // 保留两位小数，无效值显示占位符
 const fmt = (n) => (isFinite(n) ? n.toFixed(2) : "--");
+
+// 取两种币种中最新的上游抓取时间（北京时间），不使用本地请求时间代替。
+const latestTime = computed(() => {
+  const items = [cny.value, usd.value].filter((item) => item && item.time);
+  if (!items.length) return "";
+  // 日期 + 时间一起比较，跨日时也能取到较新的一条
+  return items.reduce((a, b) =>
+    `${b.date || ""}${b.time}` > `${a.date || ""}${a.time}` ? b : a
+  );
+});
+
+// 悬停查看每项独立的数据源时间，单路失败时提示重试。
+const quoteTitle = (item) => item
+  ? `Gold-API 国际现货金 · 源更新 ${item.date} ${item.time}（北京时间）${item.stale ? ' · 更新失败，显示上次报价' : ''}`
+  : "获取失败，点击重试";
 </script>
 
 <template>
@@ -43,33 +44,37 @@ const fmt = (n) => (isFinite(n) ? n.toFixed(2) : "--");
       实时金价<span class="dot" :class="{ on: loading }"></span>
     </div>
 
-    <div v-if="failed" class="err">获取失败，点击重试</div>
+    <div v-if="failed" class="err" :title="data.error">连接失败，点击重试</div>
 
     <template v-else>
-      <div class="row" :class="trend(sh)">
-        <span class="label">上海金</span>
-        <span class="price">{{ sh ? "¥" + fmt(sh.price) : "--" }}</span>
-        <span class="unit">元/克</span>
-        <span class="chg">{{ pct(sh) }}</span>
+      <div class="row" :title="quoteTitle(cny)">
+        <span class="label">人民币金</span>
+        <span class="main">
+          <span class="price">{{ cny ? "¥" + fmt(cny.price) : "--" }}</span>
+          <span class="unit">元/克</span>
+        </span>
       </div>
 
-      <div class="row" :class="trend(cx)">
-        <span class="label">国际金</span>
-        <span class="price">{{ cx ? "$" + fmt(cx.price) : "--" }}</span>
-        <span class="unit">美元/盎司</span>
-        <span class="chg">{{ pct(cx) }}</span>
+      <div class="row" :title="quoteTitle(usd)">
+        <span class="label">国际现货金</span>
+        <span class="main">
+          <span class="price">{{ usd ? "$" + fmt(usd.price) : "--" }}</span>
+          <span class="unit">美元/盎司</span>
+        </span>
       </div>
 
-      <div class="time" v-if="sh?.time || cx?.time">
-        更新于 {{ sh?.time || cx?.time }}
+      <div class="time" v-if="latestTime" :title="quoteTitle(latestTime)">
+        源更新 {{ latestTime.date }} {{ latestTime.time }}
       </div>
+      <div v-if="stale" class="warning">更新失败，显示上次报价</div>
+      <div v-else-if="data?.error" class="warning">部分报价暂不可用</div>
     </template>
   </div>
 </template>
 
 <style scoped>
 .gold {
-  width: 200px;
+  width: 208px;
   padding: 12px 14px;
   border-radius: 16px;
   background: rgba(24, 26, 32, 0.82);
@@ -88,6 +93,7 @@ const fmt = (n) => (isFinite(n) ? n.toFixed(2) : "--");
   font-weight: 600;
   opacity: 0.85;
   margin-bottom: 8px;
+  white-space: nowrap;
 }
 /* 刷新指示点：加载时闪烁 */
 .dot {
@@ -96,55 +102,46 @@ const fmt = (n) => (isFinite(n) ? n.toFixed(2) : "--");
   border-radius: 50%;
   background: #888;
   margin-left: 6px;
+  flex: none;
 }
 .dot.on {
   background: #ffd24a;
   animation: blink 0.8s ease-in-out infinite;
 }
 
+/* 一行价格：标签 | 数值+单位 | 涨跌幅，整体禁止换行 */
 .row {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  grid-template-areas: "label price chg" "label unit chg";
+  display: flex;
   align-items: center;
-  column-gap: 6px;
+  gap: 8px;
   padding: 5px 0;
+  white-space: nowrap;
 }
 .label {
-  grid-area: label;
+  flex: none;
   font-size: 12px;
   opacity: 0.7;
-  margin-right: 4px;
+}
+/* 数值与单位竖向排列，作为中间的弹性列 */
+.main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.15;
 }
 .price {
-  grid-area: price;
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .unit {
-  grid-area: unit;
   font-size: 10px;
   opacity: 0.5;
+  white-space: nowrap;
 }
-.chg {
-  grid-area: chg;
-  font-size: 12px;
-  font-weight: 600;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 涨红跌绿（A 股习惯）；flat 用默认白色 */
-.up .price,
-.up .chg {
-  color: #ff5b5b;
-}
-.down .price,
-.down .chg {
-  color: #2fd07a;
-}
-
 .time {
   margin-top: 6px;
   font-size: 10px;
@@ -156,6 +153,12 @@ const fmt = (n) => (isFinite(n) ? n.toFixed(2) : "--");
   text-align: center;
   font-size: 13px;
   color: #ffb4b4;
+}
+.warning {
+  margin-top: 4px;
+  color: #ffcf85;
+  font-size: 10px;
+  text-align: right;
 }
 
 @keyframes blink {
